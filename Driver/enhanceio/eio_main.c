@@ -2747,6 +2747,7 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 		/* cache block not found and new block couldn't be allocated */
 		atomic64_inc(&dmc->eio_stats.noroom);
 		ebio->eb_iotype |= EB_INVAL;
+		pr_err("PEEK FAIL - cache block not found and new block couldn't be allocated");
 		goto out;
 	}
 
@@ -2755,6 +2756,7 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	if (cstate & (BLOCK_IO_INPROG | QUEUED)) {
 		ebio->eb_iotype |= EB_INVAL;
 		/* treat as if cache block is not available */
+		pr_err("PEEK FAIL - io in progress");
 		goto out;
 	}
 
@@ -2783,8 +2785,10 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 		if ((cstate == ALREADY_DIRTY) ||
 		    (eio_to_sector(ebio->eb_size) == dmc->block_size))
 			retval = 1;
-		else
+		else {
 			retval = 0;
+			pr_err("PEEK FAIL - not already dirty? huh?");
+		}
 		goto out;
 
 	}
@@ -2809,6 +2813,7 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 		 * do cache write on a cache miss
 		 */
 		retval = 0;
+		pr_err("PEEK FAIL - iosize (%d) smaller than cache block size (%d)", (int)eio_to_sector(ebio->eb_size), (int)dmc->block_size);
 		ebio->eb_iotype |= EB_INVAL;
 	}
 
@@ -2909,16 +2914,25 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 	struct eio_bio *enext;
 
 	if ((dmc->mode != CACHE_MODE_WB) ||
-	    (dmc->sysctl_active.do_clean & EIO_CLEAN_KEEP))
+	    (dmc->sysctl_active.do_clean & EIO_CLEAN_KEEP)) {
 		ucwrite = 1;
+		//pr_err("UNCACHED WRITE DECIDED AS ucwrite - cleanliness bs");
+	}
 
 	ebio = ebegin;
 	while (ebio) {
 		enext = ebio->eb_next;
-		if (eio_write_peek(dmc, ebio) == 0)
+		if (eio_write_peek(dmc, ebio) == 0) {
 			ucwrite = 1;
+			pr_err("UNCACHED WRITE DECIDED AS ucwrite - failed peek");
+		}
+		else
+		{
+			pr_err("PEEKED OK!!");
+		}
 		ebio = enext;
 	}
+	pr_err("DONE PEEKING");
 
 	if (ucwrite) {
 		/*
