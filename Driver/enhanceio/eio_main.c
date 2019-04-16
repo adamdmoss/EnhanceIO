@@ -2787,7 +2787,7 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 			retval = 1;
 		else {
 			retval = 0;
-			pr_err("PEEK FAIL - not already dirty? huh?");
+			pr_err("PEEK FAIL - not already dirty or wrong size?");
 		}
 		goto out;
 
@@ -2912,6 +2912,7 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 	int error = 0;
 	struct eio_bio *ebio;
 	struct eio_bio *enext;
+	bool md_alloc_done = false;
 
 	if ((dmc->mode != CACHE_MODE_WB) ||
 	    (dmc->sysctl_active.do_clean & EIO_CLEAN_KEEP)) {
@@ -2919,6 +2920,7 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		//pr_err("UNCACHED WRITE DECIDED AS ucwrite - cleanliness bs");
 	}
 
+#if 0
 	ebio = ebegin;
 	while (ebio) {
 		enext = ebio->eb_next;
@@ -2935,43 +2937,50 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 	pr_err("DONE PEEKING");
 
 	if (ucwrite) {
-		/*
-		 * Uncached write.
-		 * Start both SSD and HDD writes
-		 */
-		atomic64_inc(&dmc->eio_stats.uncached_writes);
-		bc->bc_mdwait = 0;
-		bc->bc_dir = UNCACHED_WRITE;
-		ebio = ebegin;
-		while (ebio) {
-			enext = ebio->eb_next;
-			eio_uncached_write(dmc, ebio);
-			ebio = enext;
-		}
+#endif
 
-		eio_disk_io(dmc, bc->bc_bio, ebegin, bc, 0);
-	} else {
-		/* Cached write. Start writes to SSD blocks */
-		bc->bc_dir = CACHED_WRITE;
-		if (bc->bc_mdwait) {
+	ebio = ebegin;
+	while (ebio) {
+		enext = ebio->eb_next;
+
+		if (eio_write_peek(dmc, ebio) == 0 || ucwrite) {
+			/*
+		 	* Uncached write.
+		 	* Start both SSD and HDD writes
+		 	*/
+			atomic64_inc(&dmc->eio_stats.uncached_writes);
+			bc->bc_mdwait = 0;
+			bc->bc_dir = UNCACHED_WRITE; // note: nobody actually cares about this enum
+			//while (ebio) {
+			//	enext = ebio->eb_next;
+				eio_uncached_write(dmc, ebio);
+			//	ebio = enext;
+			//}
+
+			//eio_disk_io(dmc, bc->bc_bio, ebegin, bc, 0);
+			eio_disk_io(dmc, bc->bc_bio, NULL, bc, 0);
+		} else {
+			/* Cached write. Start writes to SSD blocks */
+			bc->bc_dir = CACHED_WRITE; // note: nobody actually cares about this enum
+			if (!md_alloc_done) {
+				if (bc->bc_mdwait) {
+
+					/*
+				 	* mdreqs are required only if the write would cause a metadata
+				 	* update.
+			 		*/
+
+					error = eio_alloc_mdreqs(dmc, bc);
+				}
+				md_alloc_done = true;
+			}
 
 			/*
-			 * mdreqs are required only if the write would cause a metadata
-			 * update.
-			 */
+		 	* Pass all orig bio flags except UNPLUG.
+		 	* UNPLUG in the end if flagged.
+		 	*/
+			VERIFY_BIO_FLAGS(ebio);
 
-			error = eio_alloc_mdreqs(dmc, bc);
-		}
-
-		/*
-		 * Pass all orig bio flags except UNPLUG.
-		 * UNPLUG in the end if flagged.
-		 */
-		ebio = ebegin;
-		VERIFY_BIO_FLAGS(ebio);
-
-		while (ebio) {
-			enext = ebio->eb_next;
 			ebio->eb_iotype = EB_MAIN_IO;
 
 			if (!error) {
@@ -2980,9 +2989,11 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 				eio_cached_write_error(dmc, ebio);
 				eb_endio(ebio, error);
 			}
-			ebio = enext;
 		}
+
+		ebio = enext;
 	}
+	//}
 }
 
 /*
