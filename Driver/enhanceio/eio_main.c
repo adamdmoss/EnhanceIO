@@ -2913,6 +2913,8 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 	struct eio_bio *ebio;
 	struct eio_bio *enext;
 	bool md_alloc_done = false;
+	bool some_sync = false;
+	bool all_sync = true;
 
 	if ((dmc->mode != CACHE_MODE_WB) ||
 	    (dmc->sysctl_active.do_clean & EIO_CLEAN_KEEP)) {
@@ -2948,17 +2950,15 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		 	* Uncached write.
 		 	* Start both SSD and HDD writes
 		 	*/
-			atomic64_inc(&dmc->eio_stats.uncached_writes);
-			bc->bc_mdwait = 0;
-			bc->bc_dir = UNCACHED_WRITE; // note: nobody actually cares about this enum
 			//while (ebio) {
 			//	enext = ebio->eb_next;
 				eio_uncached_write(dmc, ebio);
 			//	ebio = enext;
 			//}
 
+
 			//eio_disk_io(dmc, bc->bc_bio, ebegin, bc, 0);
-			eio_disk_io(dmc, bc->bc_bio, NULL, bc, 0);
+			some_sync = true;
 		} else {
 			/* Cached write. Start writes to SSD blocks */
 			bc->bc_dir = CACHED_WRITE; // note: nobody actually cares about this enum
@@ -2989,11 +2989,26 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 				eio_cached_write_error(dmc, ebio);
 				eb_endio(ebio, error);
 			}
+
+			all_sync = false;
 		}
 
 		ebio = enext;
 	}
 	//}
+
+	if (all_sync)
+	{
+		bc->bc_mdwait = 0;
+	}
+
+	if (some_sync)
+	{
+	// TODO:: remove async abios from chain before sync write?
+		atomic64_inc(&dmc->eio_stats.uncached_writes);
+		bc->bc_dir = UNCACHED_WRITE; // note: nobody actually cares about this enum
+		eio_disk_io(dmc, bc->bc_bio, ebegin, bc, 0);
+	}
 }
 
 /*
