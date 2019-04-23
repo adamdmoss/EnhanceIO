@@ -1024,7 +1024,7 @@ extern void eio_clean_all(struct cache_c *dmc);
 extern int eio_clean_thread_proc(void *context);
 extern void eio_touch_set_lru(struct cache_c *dmc, index_t set);
 extern void eio_inval_range(struct cache_c *dmc, sector_t iosector,
-			    unsigned iosize);
+			    unsigned int iosize);
 extern int eio_invalidate_sanity_check(struct cache_c *dmc, u_int64_t iosector,
 				       u_int64_t *iosize);
 /*

@@ -172,6 +172,8 @@ static inline void eio_flag_abio(struct cache_c *dmc, struct eio_bio *abio,
 	int dirty_on = 0;
 	int callendio = 0;
 
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(abio);
 	EIO_ASSERT(!(abio->eb_iotype & EB_INVAL) || abio->eb_index == -1);
 	invalidate = !invalidated && (abio->eb_iotype & EB_INVAL);
 	spin_lock_irqsave(&dmc->cache_sets[abio->eb_cacheset].cs_lock, flags);
@@ -267,6 +269,8 @@ static void eio_disk_io_callback(int error, void *context)
 	EIO_ASSERT(ebio != NULL);
 	eb_cacheset = ebio->eb_cacheset;
 
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	if (unlikely(error))
 		dmc->eio_errors.disk_read_errors++;
 
@@ -1622,10 +1626,12 @@ eio_cached_read(struct cache_c *dmc, struct eio_bio *ebio, unsigned op, unsigned
  */
 static int
 eio_inval_block_set_range(struct cache_c *dmc, int set, sector_t iosector,
-			  unsigned iosize, int multiblk)
+			  unsigned int iosize, int multiblk)
 {
 	int start_index, end_index, i;
 	sector_t endsector = iosector + eio_to_sector(iosize);
+
+	EIO_ASSERT(dmc);
 
 	start_index = dmc->assoc * set;
 	end_index = start_index + dmc->assoc;
@@ -1702,7 +1708,7 @@ void eio_inval_range(struct cache_c *dmc, sector_t iosector, unsigned iosize)
 	u_int32_t bset;
 	sector_t snum;
 	sector_t snext;
-	unsigned ioinset;
+	unsigned int ioinset;
 	unsigned long flags;
 	int totalsshift = dmc->block_shift + dmc->consecutive_shift;
 
@@ -1710,9 +1716,10 @@ void eio_inval_range(struct cache_c *dmc, sector_t iosector, unsigned iosize)
 	while (iosize) {
 		bset = hash_block(dmc, snum);
 		snext = ((snum >> totalsshift) + 1) << totalsshift;
-		ioinset = (unsigned)to_bytes(snext - snum);
+		ioinset = (unsigned int)to_bytes(snext - snum);
 		if (ioinset > iosize)
 			ioinset = iosize;
+		EIO_ASSERT(dmc->cache_sets);
 		spin_lock_irqsave(&dmc->cache_sets[bset].cs_lock, flags);
 		eio_inval_block_set_range(dmc, bset, snum, ioinset, 1);
 		spin_unlock_irqrestore(&dmc->cache_sets[bset].cs_lock, flags);
@@ -1733,6 +1740,7 @@ int eio_invalidate_cache(struct cache_c *dmc)
 
 	/* invalidate the whole cache */
 	for (i = 0; i < (dmc->size >> dmc->consecutive_shift); i++) {
+		EIO_ASSERT(dmc->cache_sets);
 		spin_lock_irqsave(&dmc->cache_sets[i].cs_lock, flags);
 		/* TBD. Apply proper fix for the cast to disk_dev_size */
 		(void)eio_inval_block_set_range(dmc, (int)i, 0,
@@ -1776,6 +1784,7 @@ static int eio_uncached_write(struct cache_c *dmc, struct eio_bio *ebio)
 		return 0;
 	}
 
+	EIO_ASSERT(dmc->cache_sets);
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 	cstate = EIO_CACHE_STATE_GET(dmc, index);
 	EIO_ASSERT(cstate & (DIRTY | CACHEWRITEINPROG));
@@ -1818,6 +1827,7 @@ static int eio_uncached_write(struct cache_c *dmc, struct eio_bio *ebio)
 	if (err) {
 		pr_err("eio_uncached_write: IO submission failed, block %llu",
 		       EIO_DBN_GET(dmc, index));
+		EIO_ASSERT(dmc->cache_sets);
 		spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock,
 				  flags);
 		if (EIO_CACHE_STATE_GET(dmc, ebio->eb_index) == ALREADY_DIRTY)
@@ -1872,6 +1882,8 @@ eio_cached_write(struct cache_c *dmc, struct eio_bio *ebio, unsigned op, unsigne
 	 * TBD
 	 * Possibly don't need the spinlock-unlock here
 	 */
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 	cstate = EIO_CACHE_STATE_GET(dmc, index);
 	if (!(cstate & DIRTY)) {
@@ -1925,7 +1937,7 @@ eio_cached_write(struct cache_c *dmc, struct eio_bio *ebio, unsigned op, unsigne
 }
 
 static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
-				    unsigned *presidual_biovec, sector_t snum,
+				    unsigned int *presidual_biovec, sector_t snum,
 				    int iosize, struct bio_container *bc,
 				    int iotype)
 {
@@ -1934,9 +1946,14 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 	 * residual_biovec is size in bytes of bvec part, that is already mapped
 	 * to the previous eio_bio
 	 */
+	EIO_ASSERT(!IS_ERR(presidual_biovec));
 	int residual_biovec = *presidual_biovec;
 	int numbvecs = 0;
 	int ios;
+
+	EIO_ASSERT(!IS_ERR(bio));
+	EIO_ASSERT(!IS_ERR(dmc));
+	EIO_ASSERT(!IS_ERR(bc));
 
 	if (residual_biovec) {
 		int bvecindex = EIO_BIO_BI_IDX(bio);
@@ -1969,6 +1986,7 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 			kmalloc(sizeof(struct eio_bio) +
 				numbvecs * sizeof(struct bio_vec), GFP_NOWAIT);
 
+		EIO_ASSERT(!IS_ERR(bio));
 		if (!ebio)
 			return ERR_PTR(-ENOMEM);
 
@@ -1998,9 +2016,10 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 	} else {
 		ebio = kmalloc(sizeof(struct eio_bio), GFP_NOWAIT);
 
+		EIO_ASSERT(!IS_ERR(ebio));
 		if (!ebio)
 			return ERR_PTR(-ENOMEM);
-		ebio->eb_bv = bio->bi_io_vec + EIO_BIO_BI_IDX(bio);
+		ebio->eb_bv = bio->bi_io_vec + EIO_BIO_BI_IDX(bio); // XXX ADAM THIS LOOKS WRONG
 		ios = iosize;
 		while (ios > 0) {
 			numbvecs++;
@@ -2021,6 +2040,7 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 	EIO_ASSERT(numbvecs != 0);
 	*presidual_biovec = residual_biovec;
 
+	EIO_ASSERT(!IS_ERR(ebio));
 	ebio->eb_sector = snum;
 	ebio->eb_cacheset = hash_block(dmc, snum);
 	ebio->eb_size = iosize;
@@ -2046,20 +2066,22 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 {
 	struct eio_bio *ebio;
 	struct kcached_job *job;
-	int residual_biovec = 0;
+	unsigned int residual_biovec = 0;
 	int error = 0;
 
+	EIO_ASSERT(bc);
+	EIO_ASSERT(dmc);
 	/*disk io happens on whole bio. Reset bi_idx*/
 	EIO_BIO_BI_IDX(bio) = bc->bio_idx;
 	ebio =
 		eio_new_ebio(dmc, bio, &residual_biovec, EIO_BIO_BI_SECTOR(bio),
 				 EIO_BIO_BI_SIZE(bio), bc, EB_MAIN_IO);
-
 	if (unlikely(IS_ERR(ebio))) {
 		bc->bc_error = error = PTR_ERR(ebio);
 		ebio = NULL;
 		goto errout;
 	}
+	EIO_ASSERT(ebio);
 
 	if (force_inval)
 		ebio->eb_iotype |= EB_INVAL;
@@ -2070,6 +2092,7 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 		error = -ENOMEM;
 		goto errout;
 	}
+	EIO_ASSERT(!IS_ERR(job));
 	atomic_inc(&dmc->nr_jobs);
 	if (ebio->eb_dir == READ) {
 		job->action = READDISK;
@@ -2099,6 +2122,8 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	return;
 
 errout:
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(anchored_bios);
 	eio_inval_range(dmc, EIO_BIO_BI_SECTOR(bio), EIO_BIO_BI_SIZE(bio));
 	eio_flag_abios(dmc, anchored_bios, error);
 
@@ -2251,8 +2276,10 @@ static int eio_acquire_set_locks(struct cache_c *dmc, struct bio_container *bc)
 	}
 
 	for (cur_seq = bc->bc_setspan; cur_seq; cur_seq = cur_seq->next)
-		for (i = cur_seq->first_set; i <= cur_seq->last_set; i++)
+		for (i = cur_seq->first_set; i <= cur_seq->last_set; i++) {
+			EIO_ASSERT(dmc->cache_sets);
 			down_read(&dmc->cache_sets[i].rw_lock);
+		}
 	return 0;
 
 err_out:
@@ -2359,8 +2386,10 @@ eio_release_io_resources(struct cache_c *dmc, struct bio_container *bc)
 
 	/* Release read locks on the sets in the set span */
 	for (cur_seq = bc->bc_setspan; cur_seq; cur_seq = cur_seq->next) {
-		for (i = cur_seq->first_set; i <= cur_seq->last_set; i++)
+		for (i = cur_seq->first_set; i <= cur_seq->last_set; i++) {
+			EIO_ASSERT(dmc->cache_sets);
 			up_read(&dmc->cache_sets[i].rw_lock);
+		}
 	}
 
 	/* Free the seqs in the set span, unless it is single span */
@@ -2374,6 +2403,7 @@ eio_release_io_resources(struct cache_c *dmc, struct bio_container *bc)
 	mdreq = bc->mdreqs;
 	while (mdreq) {
 		nmdreq = mdreq->next;
+		EIO_ASSERT(nmdreq);
 		if (mdreq->mdblk_bvecs) {
 			eio_free_wb_bvecs(mdreq->mdblk_bvecs,
 					  mdreq->mdbvec_count,
@@ -2411,6 +2441,10 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 
 	pr_debug("new I/O, idx=%u, sector=%lu, size=%u, vcnt=%d,",
 	         EIO_BIO_BI_IDX(bio), EIO_BIO_BI_SECTOR(bio), EIO_BIO_BI_SIZE(bio), bio->bi_vcnt);
+
+	if(!dmc) return 0;
+	if(!rq) return 0;
+	if(!bio) return 0;
 
 	if (EIO_BIO_BI_IDX(bio) != 0)
 		pr_debug("in eio_map bio_idx is %u", EIO_BIO_BI_IDX(bio));
@@ -2539,14 +2573,16 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 			iosize = eio_get_iosize(dmc, snum, biosize);
 			ebio = eio_new_ebio(dmc, bio, &residual_biovec, snum,
 			                    iosize, bc, EB_SUBORDINATE_IO);
-			if (IS_ERR(ebio)) {
+			if (!ebio || IS_ERR(ebio)) {
 				bc->bc_error = -ENOMEM;
 				break;
 			}
 
 			/* Anchor this ebio on ebio list. Preserve the order */
-			if (ebegin)
+			if (ebegin) {
+				EIO_ASSERT(eend);
 				eend->eb_next = ebio;
+			}
 			else
 				ebegin = ebio;
 			eend = ebio;
@@ -2618,6 +2654,8 @@ static int eio_read_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	unsigned long flags;
 	u_int8_t cstate;
 
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 
 	res = eio_lookup(dmc, ebio, &index);
@@ -2737,6 +2775,8 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	u_int8_t cstate;
 	unsigned long flags;
 
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 
 	res = eio_lookup(dmc, ebio, &index);
@@ -3032,8 +3072,11 @@ eio_get_setblks_to_clean(struct cache_c *dmc, index_t set, int *ncleans)
 	index_t start_index;
 	int nr_writes = 0;
 
+	EIO_ASSERT(ncleans);
 	*ncleans = 0;
 
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	max_clean = dmc->cache_sets[set].nr_dirty -
 		    ((dmc->sysctl_active.dirty_set_low_threshold * dmc->assoc) / 100);
 	if (max_clean <= 0)
@@ -3080,11 +3123,14 @@ static void eio_sync_io_callback(int error, void *context)
  */
 
 struct bio_vec *setup_bio_vecs(struct bio_vec *bvec, index_t block_index,
-			       unsigned block_size, unsigned total,
-			       unsigned *num_bvecs)
+			       unsigned int block_size, unsigned int total,
+			       unsigned int *num_bvecs)
 {
 	struct bio_vec *data = NULL;
 	index_t iovec_index;
+
+	EIO_ASSERT(num_bvecs);
+	EIO_ASSERT(bvec);
 
 	switch (block_size) {
 	case BLKSIZE_2K:
@@ -3132,7 +3178,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 	int pindex, k;
 	index_t blkindex;
 	struct bio_vec *bvecs;
-	unsigned nr_bvecs = 0, total;
+	unsigned int nr_bvecs = 0, total;
 	void *pg_virt_addr[2] = { NULL };
 
 	/* Cache is failed mode, do nothing. */
@@ -3143,6 +3189,8 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 	}
 
 	/* Nothing to clean, if there are no dirty blocks */
+	EIO_ASSERT(dmc);
+	EIO_ASSERT(dmc->cache_sets);
 	if (dmc->cache_sets[set].nr_dirty == 0)
 		goto err_out1;
 
